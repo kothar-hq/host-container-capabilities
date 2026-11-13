@@ -11,8 +11,10 @@ On Windows it checks:
 - the Windows engine behind the default docker context: its version, default isolation, and the isolation each of
   ltsc2019, ltsc2022 and ltsc2025 needs on this host build
 - a Linux engine, in this order: the default WSL distro's own Docker, any other WSL 2 distro's Docker (the
-  docker-desktop distros are skipped), the default docker context if it is a Linux engine, and Docker Desktop's
-  Linux engine pipe if it already exists. It stops at the first that answers. Probing a stopped WSL distro boots it.
+  docker-desktop distros are skipped), the default docker context if it is a Linux engine, Docker Desktop's
+  Linux engine pipe if it already exists, then Podman in each WSL 2 distro (which includes Podman Desktop's
+  podman-machine distros) and the native podman CLI. It stops at the first that answers. Probing a stopped WSL
+  distro boots it.
 - gh, and whether it is logged in (the exit code only; nothing it prints is kept)
 
 It never switches Docker Desktop between Windows and Linux containers, never starts a daemon, and installs nothing.
@@ -23,8 +25,8 @@ current directory, otherwise the current directory.
 The report is cached in <root>/.claude/host-container-capabilities.windows.local.json, which should be gitignored.
 A cached report is reused until it is older than maxAgeHours, the overrides file is newer than it, or -Refresh is
 given. Overrides are read from <root>/.claude/host-container-capabilities.overrides.local.json, a flat JSON object:
-  linuxEngine             'auto' (default), 'none', 'wsl:<distro>', 'docker' (the default docker context) or
-                          'docker-desktop-linux'
+  linuxEngine             'auto' (default), 'none', 'wsl:<distro>' (Docker, then Podman, in that distro), 'docker'
+                          (the default docker context), 'docker-desktop-linux' or 'podman' (the native podman CLI)
   sharedHost              true (default). Set false only on a host that nothing else uses.
   maxAgeHours             24 (default)
   createdByLabel          the key=value label the agent puts on everything it creates
@@ -97,8 +99,8 @@ if (Test-Path $overridesPath) {
     foreach ($key in @($userOverrides.Keys)) {
         if ($overrides.Contains($key)) { $overrides[$key] = $userOverrides[$key] } else { Write-Warning "Ignoring unknown override '$key'" }
     }
-    if ($overrides.linuxEngine -notmatch '^(auto|none|docker|docker-desktop-linux|wsl:.+)$') {
-        throw "Override linuxEngine '$($overrides.linuxEngine)' must be auto, none, docker, docker-desktop-linux or wsl:<distro>"
+    if ($overrides.linuxEngine -notmatch '^(auto|none|docker|docker-desktop-linux|podman|wsl:.+)$') {
+        throw "Override linuxEngine '$($overrides.linuxEngine)' must be auto, none, docker, docker-desktop-linux, podman or wsl:<distro>"
     }
     if ($overrides.createdByLabel -notmatch '^[^=\s]+=\S+$') {
         throw "Override createdByLabel '$($overrides.createdByLabel)' must be key=value, without spaces"
@@ -136,6 +138,11 @@ function Invoke-Native {
 # and sets $script:probeError when the engine doesn't answer.
 function Get-EngineFact {
     param([Parameter(Mandatory)][string[]]$Docker)
+    $cli = Invoke-Native ($Docker + @('--version'))
+    if ($cli.ExitCode -eq 0 -and $cli.Output -match 'podman') {
+        $script:probeError = 'docker is the podman-docker shim'
+        return $null
+    }
     $version = Invoke-Native ($Docker + @('version', '--format', '{{.Server.Os}}|{{.Server.Version}}'))
     if ($version.ExitCode -ne 0 -or $version.Output -notmatch '^(\w+)\|(\S+)$') {
         $script:probeError = ($version.Output -split "`n" | Where-Object { $_ } | Select-Object -First 1) ?? 'no output'
@@ -144,6 +151,7 @@ function Get-EngineFact {
     $os, $serverVersion = $Matches[1], $Matches[2]
     $info = Invoke-Native ($Docker + @('info', '--format', '{{.OperatingSystem}}|{{.Isolation}}'))
     $operatingSystem, $isolation = if ($info.ExitCode -eq 0) { $info.Output -split '\|', 2 } else { $null, $null }
+    $security = Invoke-Native ($Docker + @('info', '--format', '{{.SecurityOptions}}'))
     $endpoint = Invoke-Native ($Docker + @('context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'))
     $names = Invoke-Native ($Docker + @('ps', '-a', '--format', '{{.Names}}'))
     $mine = Invoke-Native ($Docker + @('ps', '-aq', '--filter', "label=$($overrides.createdByLabel)"))
@@ -152,7 +160,37 @@ function Get-EngineFact {
         ServerVersion   = $serverVersion
         OperatingSystem = $operatingSystem
         Isolation       = if ($isolation) { $isolation } else { $null }
+        Rootless        = if ($security.ExitCode -eq 0) { $security.Output -match 'rootless' } else { $null }
+        Selinux         = if ($security.ExitCode -eq 0) { $security.Output -match 'selinux' } else { $null }
         Endpoint        = if ($endpoint.ExitCode -eq 0) { $endpoint.Output } else { $null }
+        Names           = @($names.Output -split "`n" | Where-Object { $_ })
+        ClaudeCount     = @($mine.Output -split "`n" | Where-Object { $_ }).Count
+    }
+}
+
+# Asks a Podman CLI (an array such as 'wsl.exe','-d','Fedora','--exec','podman') about its engine, with Podman's
+# own field names. Returns $null and sets $script:probeError when the engine doesn't answer.
+function Get-PodmanFact {
+    param([Parameter(Mandatory)][string[]]$Podman)
+    $format = '{{.Host.Os}}|{{.Version.Version}}|{{.Host.Distribution.Distribution}} {{.Host.Distribution.Version}}|' +
+        '{{.Host.Security.Rootless}}|{{.Host.Security.SELinuxEnabled}}|{{.Host.RemoteSocket.Path}}'
+    $info = Invoke-Native ($Podman + @('info', '--format', $format))
+    $line = $info.Output -split "`n" | Where-Object { $_ -match '^\w+\|' } | Select-Object -First 1
+    if ($info.ExitCode -ne 0 -or -not $line) {
+        $script:probeError = ($info.Output -split "`n" | Where-Object { $_ } | Select-Object -First 1) ?? 'no output'
+        return $null
+    }
+    $os, $serverVersion, $operatingSystem, $rootless, $selinux, $endpoint = $line.Trim() -split '\|', 6
+    $names = Invoke-Native ($Podman + @('ps', '-a', '--format', '{{.Names}}'))
+    $mine = Invoke-Native ($Podman + @('ps', '-aq', '--filter', "label=$($overrides.createdByLabel)"))
+    [pscustomobject]@{
+        Os              = $os
+        ServerVersion   = $serverVersion
+        OperatingSystem = $operatingSystem
+        Isolation       = $null
+        Rootless        = if ($rootless -in 'true', 'false') { $rootless -eq 'true' } else { $null }
+        Selinux         = if ($selinux -in 'true', 'false') { $selinux -eq 'true' } else { $null }
+        Endpoint        = if ($endpoint) { $endpoint } else { $null }
         Names           = @($names.Output -split "`n" | Where-Object { $_ })
         ClaudeCount     = @($mine.Output -split "`n" | Where-Object { $_ }).Count
     }
@@ -221,34 +259,49 @@ try {
     $candidates = @()
     $wslCandidates = @($distros | Where-Object { $_.version -eq 2 -and $_.name -notlike 'docker-desktop*' } |
         Sort-Object { -not $_.default })
+    # Kind 'wsl' is Docker inside a WSL distro. Kind 'podman' is Podman, inside a WSL distro (Distro is set, which
+    # covers Podman Desktop's podman-machine distros) or through the native podman CLI (Distro is $null).
+    $nativePodman = [pscustomobject]@{ Kind = 'podman'; Distro = $null }
     switch -Regex ($overrides.linuxEngine) {
         '^auto$' {
             $candidates += $wslCandidates | ForEach-Object { [pscustomobject]@{ Kind = 'wsl'; Distro = $_.name } }
             $candidates += [pscustomobject]@{ Kind = 'docker'; Distro = $null }
             if ($dockerDesktopLinuxPipe) { $candidates += [pscustomobject]@{ Kind = 'docker-desktop-linux'; Distro = $null } }
+            $candidates += $wslCandidates | ForEach-Object { [pscustomobject]@{ Kind = 'podman'; Distro = $_.name } }
+            if (Get-Command podman -ErrorAction SilentlyContinue) { $candidates += $nativePodman }
         }
-        '^wsl:(.+)$' { $candidates += [pscustomobject]@{ Kind = 'wsl'; Distro = $Matches[1] } }
+        '^wsl:(.+)$' {
+            $candidates += [pscustomobject]@{ Kind = 'wsl'; Distro = $Matches[1] }
+            $candidates += [pscustomobject]@{ Kind = 'podman'; Distro = $Matches[1] }
+        }
+        '^podman$' { $candidates += $nativePodman }
         '^(docker|docker-desktop-linux)$' { $candidates += [pscustomobject]@{ Kind = $Matches[1]; Distro = $null } }
     }
 
     $linuxEngine = [ordered]@{
         available = $false; kind = $null; distro = $null; invoke = $null; endpoint = $null; serverVersion = $null
-        operatingSystem = $null; containers = $null; claudeContainers = $null; repoPath = $null; reason = $null; tried = @()
+        operatingSystem = $null; rootless = $null; selinux = $null; containers = $null; claudeContainers = $null
+        repoPath = $null; reason = $null; tried = @()
     }
     foreach ($candidate in $candidates) {
         $docker = switch ($candidate.Kind) {
             'wsl' { @('wsl.exe', '--distribution', $candidate.Distro, '--exec', 'docker') }
             'docker' { @('docker') }
             'docker-desktop-linux' { @('docker', '--host', 'npipe:////./pipe/dockerDesktopLinuxEngine') }
+            'podman' {
+                if ($candidate.Distro) { @('wsl.exe', '--distribution', $candidate.Distro, '--exec', 'podman') } else { @('podman') }
+            }
         }
-        $fact = if ($candidate.Kind -eq 'docker') { $defaultEngine } else { Get-EngineFact $docker }
+        $fact = if ($candidate.Kind -eq 'docker') { $defaultEngine }
+            elseif ($candidate.Kind -eq 'podman') { Get-PodmanFact $docker }
+            else { Get-EngineFact $docker }
         $failure = if (-not $fact) { if ($candidate.Kind -eq 'docker') { $defaultError } else { $script:probeError } }
             elseif ($fact.Os -ne 'linux') { "it is a $($fact.Os) engine" }
         if ($failure) {
             $linuxEngine.tried += [ordered]@{ kind = $candidate.Kind; distro = $candidate.Distro; error = $failure }
             continue
         }
-        $repoPath = if ($candidate.Kind -eq 'wsl') {
+        $repoPath = if ($candidate.Distro) {
             (Invoke-Native @('wsl.exe', '--distribution', $candidate.Distro, '--exec', 'wslpath', '-a', $projectRoot)).Output
         } else { $null }
         $linuxEngine.available = $true
@@ -258,6 +311,8 @@ try {
         $linuxEngine.endpoint = $fact.Endpoint
         $linuxEngine.serverVersion = $fact.ServerVersion
         $linuxEngine.operatingSystem = $fact.OperatingSystem
+        $linuxEngine.rootless = $fact.Rootless
+        $linuxEngine.selinux = $fact.Selinux
         $linuxEngine.containers = $fact.Names.Count
         $linuxEngine.claudeContainers = $fact.ClaudeCount
         $linuxEngine.repoPath = $repoPath
@@ -265,6 +320,7 @@ try {
     }
     if (-not $linuxEngine.available) {
         $linuxEngine.reason = if ($overrides.linuxEngine -eq 'none') { 'disabled by the linuxEngine override' }
+            elseif ($linuxEngine.tried | Where-Object { $_.error -match 'permission denied' }) { 'socket permission denied' }
             elseif (-not $wsl.installed) { 'WSL is not installed and no other Linux engine answered' }
             else { 'no candidate answered; see tried' }
     }

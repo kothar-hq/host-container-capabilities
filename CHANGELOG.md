@@ -11,3 +11,7 @@ The first public release. The skill comes from [zippy1981/windows-nano-baseimage
 - The cache and overrides files are named `.claude/host-container-capabilities.*.local.json`.
 - New overrides: `createdByLabel`, `sessionLabelKey` and `runnerContainerPattern`. The report repeats the labels in `policy`.
 - An installer: `npx host-container-capabilities install`.
+- Podman as a Linux engine (kind `podman`, and a `"linuxEngine": "podman"` override): tried after Docker, read with Podman's own `info` fields, and reported as `podman` where `docker` is the podman-docker shim.
+- `linuxEngine.rootless` and `linuxEngine.selinux`, and the user and mount flags they call for.
+- A `linuxEngine.reason` of `socket permission denied` when Docker is there but the user can't use its socket, and `no docker or podman CLI is installed` when there is no CLI.
+- A Windows engine behind the docker CLI's current context fills in `windowsEngine` from Linux and macOS.

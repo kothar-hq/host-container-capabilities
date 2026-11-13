@@ -5,7 +5,7 @@ An [agent skill](https://agentskills.io) that finds out which container engines 
 Coding agents run on Windows hosts (some with WSL), on Linux and macOS, inside WSL, and in cloud sandboxes. An agent that assumes `docker` reaches a Linux engine gets it wrong on a Windows host in Windows-container mode, and one that "fixes" that by switching Docker Desktop stops every container on the host. This skill gives the agent a probed report instead:
 
 - **Windows engine:** whether one answers, and the isolation (`process` or `hyperv`) that ltsc2019, ltsc2022 and ltsc2025 images need on this host build.
-- **Linux engine:** the default WSL distro's own Docker, then other WSL 2 distros, then the default docker context, then an existing Docker Desktop Linux pipe. On Linux and macOS, the docker CLI's current context.
+- **Linux engine:** the default WSL distro's own Docker, then other WSL 2 distros, then the default docker context, then an existing Docker Desktop Linux pipe, then Podman. On Linux and macOS, the docker CLI's current context, then Podman. The report says whether the engine is rootless and whether SELinux is enforced.
 - **Routing:** run locally when the engine exists, otherwise offer the project's CI workflow.
 - **Shared-host safety:** everything the agent creates is named and labelled, and only that is cleaned up. Docker Desktop is never switched, and no daemon is started or installed without asking.
 
@@ -54,7 +54,7 @@ sh .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
 
 - Windows: PowerShell 7. Linux, macOS and WSL: a POSIX `sh`.
 - The installer needs Node.js 20 or later. The skill itself doesn't need Node.
-- Docker is the only container runtime probed today. Podman and others are tracked in the [issues](https://github.com/kothar-hq/host-container-capabilities/issues).
+- Docker and Podman are probed today. Other runtimes are tracked in the [issues](https://github.com/kothar-hq/host-container-capabilities/issues).
 
 ## Versions
 
