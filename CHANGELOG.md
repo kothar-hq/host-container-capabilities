@@ -10,4 +10,4 @@ The first public release. The skill comes from [zippy1981/windows-nano-baseimage
 - The probe scripts live inside the skill. The project root is the git work tree around the current directory, or `HOST_CONTAINER_CAPABILITIES_ROOT`.
 - The cache and overrides files are named `.claude/host-container-capabilities.*.local.json`.
 - New overrides: `createdByLabel`, `sessionLabelKey` and `runnerContainerPattern`. The report repeats the labels in `policy`.
-- An installer: `npx host-container-capabilities install`.
+- The npm package is `@kothar-hq/host-container-capabilities`. Its installer: `npx @kothar-hq/host-container-capabilities install`.

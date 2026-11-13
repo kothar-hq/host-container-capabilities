@@ -22,15 +22,15 @@ npx skills add kothar-hq/host-container-capabilities
 From npm, with the installer in the package:
 
 ```sh
-npx host-container-capabilities install            # into ./.claude/skills
-npx host-container-capabilities install --global   # into ~/.claude/skills
-npx host-container-capabilities install --dir .agents/skills
+npx @kothar-hq/host-container-capabilities install            # into ./.claude/skills
+npx @kothar-hq/host-container-capabilities install --global   # into ~/.claude/skills
+npx @kothar-hq/host-container-capabilities install --dir .agents/skills
 ```
 
 Or as a dev dependency, synced by the skills CLI:
 
 ```sh
-npm install --save-dev host-container-capabilities
+npm install --save-dev @kothar-hq/host-container-capabilities
 npx skills experimental_sync
 ```
 
