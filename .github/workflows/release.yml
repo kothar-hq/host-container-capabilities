@@ -1,0 +1,91 @@
+name: release
+
+# Publishes the version in package.json to npm when it isn't there yet, then creates the vX.Y.Z tag and the
+# GitHub release. A release is therefore a merged pull request that changes the version.
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Is this version on npm already?
+        id: version
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+          if published=$(npm view "${name}@${version}" version 2>/dev/null) && [ "${published}" = "${version}" ]; then
+            echo "${name}@${version} is already on npm. Nothing to publish."
+            echo "publish=false" >>"${GITHUB_OUTPUT}"
+          else
+            echo "${name}@${version} is not on npm. Publishing."
+            echo "publish=true" >>"${GITHUB_OUTPUT}"
+          fi
+
+  publish:
+    needs: check
+    if: needs.check.outputs.publish == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: write # the tag and the GitHub release
+      id-token: write # npm provenance, and npm trusted publishing
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm test
+      - name: Release notes from the changelog
+        run: |
+          awk -v heading="## ${VERSION}" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md >"${RUNNER_TEMP}/notes.md"
+          if ! grep -q '[^[:space:]]' "${RUNNER_TEMP}/notes.md"; then
+            echo "CHANGELOG.md has no section for ${VERSION}" >&2
+            exit 1
+          fi
+      - name: Publish to npm
+        # With an npm trusted publisher configured for this workflow and environment, npm uses OIDC and needs no
+        # token. Until then (the first publish, before the package exists), it uses the environment's NPM_TOKEN.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+      - name: Tag and create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${VERSION}" --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+            --title "v${VERSION}" --notes-file "${RUNNER_TEMP}/notes.md"
