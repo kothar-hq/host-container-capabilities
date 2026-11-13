@@ -26,6 +26,7 @@ case "$FAKE_DOCKER:$1" in
     *:info)
         case "$FAKE_DOCKER:$*" in
             rootless:*SecurityOptions*) echo "[name=seccomp,profile=builtin name=rootless name=cgroupns]" ;;
+            selinux:*SecurityOptions*) echo "[name=selinux name=seccomp,profile=builtin name=cgroupns]" ;;
             *SecurityOptions*) echo "[name=apparmor name=seccomp,profile=builtin name=cgroupns]" ;;
             windows:*) echo "Microsoft Windows Server 2025|process" ;;
             *) echo "Ubuntu 24.04.1 LTS|" ;;
@@ -35,11 +36,14 @@ case "$FAKE_DOCKER:$1" in
     *:ps) case "$*" in *label=*) echo aaa ;; *) printf 'aaa\\nbbb\\nccc\\n' ;; esac ;;
 esac
 `;
+// Podman's info reports the socket as a bare path, as podman does. FAKE_PODMAN picks the engine's state.
 const fakePodman = `#!/bin/sh
-case "$1" in
-    --version) echo "podman version 5.2.3" ;;
-    info) echo "linux|5.2.3|fedora 41|true|true|unix:///run/user/1000/podman/podman.sock" ;;
-    ps) case "$*" in *label=*) ;; *) printf 'aaa\\nbbb\\n' ;; esac ;;
+case "$FAKE_PODMAN:$1" in
+    *:--version) echo "podman version 5.2.3" ;;
+    denied:info) echo "Error: permission denied while connecting to the Podman socket" >&2; exit 125 ;;
+    rootful:info) echo "linux|5.2.3|centos 9|false|false|" ;;
+    *:info) echo "linux|5.2.3|fedora 41|true|true|/run/user/1000/podman/podman.sock" ;;
+    *:ps) case "$*" in *label=*) ;; *) printf 'aaa\\nbbb\\n' ;; esac ;;
 esac
 `;
 
@@ -63,7 +67,7 @@ function sandbox({ docker = false, podman = false, shimOnly = false } = {}) {
     return { dir, bin, project };
 }
 
-function probe({ bin, project }, fake, overrides) {
+function probe({ bin, project }, fake, overrides, podman) {
     if (overrides) {
         mkdirSync(join(project, '.claude'), { recursive: true });
         writeFileSync(join(project, '.claude', 'host-container-capabilities.overrides.local.json'), JSON.stringify(overrides));
@@ -71,7 +75,7 @@ function probe({ bin, project }, fake, overrides) {
     const output = execFileSync(join(bin, 'sh'), [join(scripts, 'host-capabilities.sh'), '--refresh'], {
         cwd: project,
         encoding: 'utf8',
-        env: { PATH: bin, HOST_CONTAINER_CAPABILITIES_ROOT: project, FAKE_DOCKER: fake ?? '' },
+        env: { PATH: bin, HOST_CONTAINER_CAPABILITIES_ROOT: project, FAKE_DOCKER: fake ?? '', FAKE_PODMAN: podman ?? '' },
     });
     return JSON.parse(output);
 }
@@ -143,7 +147,7 @@ test('Podman is tried after Docker, and read with its own fields', fakes, () => 
         assert.deepEqual(linuxEngine.invoke, ['podman']);
         assert.equal(linuxEngine.serverVersion, '5.2.3');
         assert.equal(linuxEngine.operatingSystem, 'fedora 41');
-        assert.equal(linuxEngine.endpoint, 'unix:///run/user/1000/podman/podman.sock');
+        assert.equal(linuxEngine.endpoint, 'unix:///run/user/1000/podman/podman.sock', 'the socket path is written as a URL, like Docker\'s');
         assert.equal(linuxEngine.rootless, true);
         assert.equal(linuxEngine.selinux, true);
         assert.equal(linuxEngine.containers, 2);
@@ -195,6 +199,71 @@ test('a remote Windows engine behind the docker context fills in windowsEngine',
     });
 });
 
+test('a remote Windows engine is still filled in when Podman is the Linux engine', fakes, () => {
+    withSandbox({ docker: true, podman: true }, (box) => {
+        const { linuxEngine, windowsEngine } = probe(box, 'windows');
+        assert.equal(linuxEngine.kind, 'podman');
+        assert.equal(windowsEngine.available, true);
+        assert.deepEqual(windowsEngine.invoke, ['docker']);
+    });
+});
+
+test('SELinux and rootless are recorded as false, not left unknown, on a plain engine', fakes, () => {
+    withSandbox({ docker: true }, (box) => {
+        assert.equal(probe(box, 'selinux').linuxEngine.selinux, true);
+        const { linuxEngine } = probe(box, 'rootful');
+        assert.equal(linuxEngine.selinux, false);
+        assert.equal(linuxEngine.rootless, false);
+    });
+    withSandbox({ podman: true }, (box) => {
+        const { linuxEngine } = probe(box, undefined, undefined, 'rootful');
+        assert.equal(linuxEngine.kind, 'podman');
+        assert.equal(linuxEngine.rootless, false);
+        assert.equal(linuxEngine.selinux, false);
+    });
+});
+
+test('a socket Podman cannot open is "socket permission denied", as Docker\'s is', fakes, () => {
+    withSandbox({ podman: true }, (box) => {
+        const { linuxEngine } = probe(box, undefined, undefined, 'denied');
+        assert.equal(linuxEngine.available, false);
+        assert.equal(linuxEngine.reason, 'socket permission denied');
+        assert.equal(linuxEngine.tried.at(-1).kind, 'podman');
+    });
+});
+
+test('the podman override does not fall back to Docker, and the reason names the real problem', fakes, () => {
+    withSandbox({ docker: true }, (box) => {
+        const { linuxEngine } = probe(box, 'rootful', { linuxEngine: 'podman' });
+        assert.equal(linuxEngine.available, false);
+        assert.deepEqual(linuxEngine.tried.map((entry) => entry.kind), ['podman']);
+        assert.equal(linuxEngine.reason, 'no candidate answered; see tried', 'docker is installed, so "no CLI" would be wrong');
+    });
+});
+
+test('the docker override does not fall back to Podman', fakes, () => {
+    withSandbox({ podman: true }, (box) => {
+        const { linuxEngine } = probe(box, undefined, { linuxEngine: 'docker' });
+        assert.equal(linuxEngine.available, false);
+        assert.deepEqual(linuxEngine.tried.map((entry) => entry.kind), ['docker']);
+        assert.equal(linuxEngine.reason, 'no candidate answered; see tried', 'podman is installed, so "no CLI" would be wrong');
+    });
+});
+
+test('an unknown linuxEngine override is refused, and the message names podman', fakes, () => {
+    withSandbox({ docker: true }, (box) => {
+        mkdirSync(join(box.project, '.claude'), { recursive: true });
+        writeFileSync(join(box.project, '.claude', 'host-container-capabilities.overrides.local.json'), '{"linuxEngine": "kubernetes"}');
+        const result = spawnSync(join(box.bin, 'sh'), [join(scripts, 'host-capabilities.sh'), '--refresh'], {
+            cwd: box.project,
+            encoding: 'utf8',
+            env: { PATH: box.bin, HOST_CONTAINER_CAPABILITIES_ROOT: box.project },
+        });
+        assert.equal(result.status, 2);
+        assert.match(result.stderr, /must be auto, none, docker or podman/);
+    });
+});
+
 function realProbe(overrides, command = ['sh', join(scripts, 'host-capabilities.sh')]) {
     const project = mkdtempSync(join(tmpdir(), 'hcc-real-'));
     try {
@@ -211,7 +280,11 @@ function realProbe(overrides, command = ['sh', join(scripts, 'host-capabilities.
     }
 }
 
-test('the real Docker on a Linux CI runner', { skip: !linuxCi && 'only in CI on Linux' }, () => {
+// On a machine where "docker" is the podman-docker shim, there is no real Docker to test.
+const dockerVersion = spawnSync('docker', ['--version'], { encoding: 'utf8' }).stdout ?? '';
+const realDockerSkip = (!linuxCi && 'only in CI on Linux') || (/podman/i.test(dockerVersion) && 'docker is the podman-docker shim') || false;
+
+test('the real Docker on a Linux CI runner', { skip: realDockerSkip }, () => {
     const { report, project } = realProbe({ linuxEngine: 'docker' });
     console.log(JSON.stringify(report, null, 2));
     assert.equal(report.platform, 'linux');

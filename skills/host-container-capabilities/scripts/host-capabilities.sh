@@ -131,13 +131,14 @@ $out
 EOF
     case "$p_rootless" in true | false) ;; *) p_rootless='' ;; esac
     case "$p_selinux" in true | false) ;; *) p_selinux='' ;; esac
+    case "$p_endpoint" in /*) p_endpoint="unix://$p_endpoint" ;; esac
     count_containers "$@"
 }
 
 # Linux engine: Docker first (the docker CLI's current context: DOCKER_HOST, Docker Desktop, colima, a distro's own
 # Docker), then Podman.
 l_available=false l_kind='' l_invoke=null l_version='' l_osname='' l_endpoint='' l_rootless='' l_selinux=''
-l_total='' l_mine='' l_reason='' l_tried='' l_denied=0 l_cli=0
+l_total='' l_mine='' l_reason='' l_tried='' l_denied=0
 # A Windows engine behind the docker CLI's current context (DOCKER_HOST or a remote context)
 remote_windows=0 rw_version='' rw_endpoint='' rw_isolation=''
 
@@ -152,7 +153,6 @@ found_linux() {
 }
 try_docker() {
     if ! command -v docker >/dev/null 2>&1; then add_tried docker 'docker CLI not installed'; return 1; fi
-    l_cli=1
     if is_podman docker; then add_tried docker 'docker is the podman-docker shim'; return 1; fi
     if ! probe_docker docker; then add_tried docker "$p_error"; return 1; fi
     if [ "$p_os" = linux ]; then found_linux docker docker; return 0; fi
@@ -172,7 +172,6 @@ try_podman() {
             return 1
         fi
     fi
-    l_cli=1
     if ! probe_podman "$cli"; then add_tried podman "$p_error"; return 1; fi
     if [ "$p_os" = linux ]; then found_linux podman "$cli"; return 0; fi
     add_tried podman "it is a $p_os engine"
@@ -187,7 +186,7 @@ esac
 if [ "$l_available" = false ] && [ -z "$l_reason" ]; then
     if [ "$l_denied" = 1 ]; then
         l_reason='socket permission denied'
-    elif [ "$l_cli" = 0 ]; then
+    elif ! command -v docker >/dev/null 2>&1 && ! command -v podman >/dev/null 2>&1; then
         l_reason='no docker or podman CLI is installed'
     else
         l_reason='no candidate answered; see tried'
