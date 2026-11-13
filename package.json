@@ -1,6 +1,6 @@
 {
   "name": "@kothar-hq/host-container-capabilities",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "An agent skill that finds out which container engines a host has (Windows, Linux, WSL) and routes container work to a local engine or to CI.",
   "keywords": [
     "agent-skill",
