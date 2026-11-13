@@ -88,10 +88,48 @@ jobs:
           test -x .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
           HOST_CONTAINER_CAPABILITIES_ROOT="${project}" sh .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
 
+  # The skill's own examples under rootless Podman, which ubuntu-latest ships.
+  podman:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CREATED_BY: io.github.kothar-hq.created-by=agent
+      SESSION: io.github.kothar-hq.session=c1c1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The probe finds Podman
+        run: |
+          PROJECT="${RUNNER_TEMP}/project"
+          mkdir -p "${PROJECT}/.claude"
+          echo '{"linuxEngine": "podman"}' >"${PROJECT}/.claude/host-container-capabilities.overrides.local.json"
+          HOST_CONTAINER_CAPABILITIES_ROOT="${PROJECT}" sh skills/host-container-capabilities/scripts/host-capabilities.sh |
+            tee "${RUNNER_TEMP}/report.json"
+          test "$(jq -r '.linuxEngine | "\(.available) \(.kind) \(.rootless)"' "${RUNNER_TEMP}/report.json")" = 'true podman true'
+      - name: The skill's actionlint example
+        run: |
+          podman run --rm --name agent-lint-c1c1 --label "${CREATED_BY}" --label "${SESSION}" --userns=keep-id \
+            --volume "${PWD}:/src:ro,Z" --workdir /src docker.io/rhysd/actionlint:1.7.12 -color
+      - name: Files written to the project belong to the user
+        run: |
+          PROJECT="${RUNNER_TEMP}/project"
+          podman run --rm --name agent-write-c1c1 --label "${CREATED_BY}" --label "${SESSION}" --userns=keep-id \
+            --volume "${PROJECT}:/work:Z" docker.io/library/busybox:1.37 touch /work/written-by-container
+          test "$(stat -c %u "${PROJECT}/written-by-container")" = "$(id -u)"
+      - name: Cleanup removes only what carries the session label
+        run: |
+          podman create --name agent-done-c1c1 --label "${CREATED_BY}" --label "${SESSION}" docker.io/library/busybox:1.37 true
+          podman create --name someone-elses docker.io/library/busybox:1.37 true
+          podman ps -aq --filter "label=${SESSION}" | xargs -r podman rm -f
+          test -z "$(podman ps -aq --filter name=agent-done-c1c1)"
+          test -n "$(podman ps -aq --filter name=someone-elses)"
+          podman rm -f someone-elses
+
   # The one required status check: it passes only when every job above passed.
   ci:
     if: always()
-    needs: [lint, test, pack]
+    needs: [lint, test, pack, podman]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

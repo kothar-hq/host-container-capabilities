@@ -9,7 +9,7 @@
 # The project root is $HOST_CONTAINER_CAPABILITIES_ROOT, else the git work tree around the current directory,
 # else the current directory. The report is cached in <root>/.claude/host-container-capabilities.<platform>.local.json.
 # Overrides are read from <root>/.claude/host-container-capabilities.overrides.local.json, a flat JSON object with
-# linuxEngine (auto, none or docker), sharedHost (true), maxAgeHours (24), createdByLabel, sessionLabelKey and
+# linuxEngine (auto, none, docker or podman), sharedHost (true), maxAgeHours (24), createdByLabel, sessionLabelKey and
 # runnerContainerPattern. It never starts a daemon and installs nothing.
 set -eu
 
@@ -66,8 +66,8 @@ ov_session=$(json_value "$overrides" sessionLabelKey)
 ov_runners=$(json_value "$overrides" runnerContainerPattern)
 : "${ov_engine:=auto}" "${ov_shared:=true}" "${ov_age:=24}"
 : "${ov_label:=io.github.kothar-hq.created-by=agent}" "${ov_session:=io.github.kothar-hq.session}"
-case "$ov_engine" in auto | none | docker) ;; *)
-    echo "host-capabilities.sh: override linuxEngine '$ov_engine' must be auto, none or docker here" >&2; exit 2 ;;
+case "$ov_engine" in auto | none | docker | podman) ;; *)
+    echo "host-capabilities.sh: override linuxEngine '$ov_engine' must be auto, none, docker or podman here" >&2; exit 2 ;;
 esac
 case "$ov_shared" in true | false) ;; *) echo "host-capabilities.sh: override sharedHost must be true or false" >&2; exit 2 ;; esac
 case "$ov_age" in '' | *[!0-9]*) echo "host-capabilities.sh: override maxAgeHours must be a whole number" >&2; exit 2 ;; esac
@@ -84,46 +84,119 @@ if [ "$refresh" = 0 ] && [ -f "$cache" ] && [ -z "$(find "$overrides" -newer "$c
     fi
 fi
 
-# probe <docker command...>: asks a docker CLI about its engine. Sets p_os, p_version, p_osname, p_isolation,
-# p_endpoint, p_total and p_mine, or p_error when the engine doesn't answer.
-probe() {
-    p_os='' p_version='' p_osname='' p_isolation='' p_endpoint='' p_total='' p_mine='' p_error=''
-    if ! out=$("$@" version --format '{{.Server.Os}}|{{.Server.Version}}' 2>&1) || [ "${out#*|}" = "$out" ]; then
-        p_error=$(printf '%s\n' "$out" | sed -n '/./{p;q;}')
-        : "${p_error:=no output}"
+# The probes set p_os, p_version, p_osname, p_isolation, p_endpoint, p_rootless, p_selinux, p_total and p_mine,
+# or p_error when the engine doesn't answer.
+reset_probe() {
+    p_os='' p_version='' p_osname='' p_isolation='' p_endpoint='' p_rootless='' p_selinux='' p_total='' p_mine='' p_error=''
+}
+# first_error <command...>: the first non-empty line the command prints on stderr
+first_error() {
+    p_error=$("$@" 2>&1 >/dev/null | sed -n '/./{p;q;}' || true)
+    : "${p_error:=no output}"
+}
+count_containers() {
+    p_total=$("$@" ps -aq 2>/dev/null | wc -l | tr -d ' ')
+    p_mine=$("$@" ps -aq --filter "label=$ov_label" 2>/dev/null | wc -l | tr -d ' ')
+}
+# is_podman <cli>: true when the CLI is Podman, which includes the podman-docker shim named docker
+is_podman() { "$1" --version 2>/dev/null | grep -qi podman; }
+
+# probe_docker <docker command...>: asks a docker CLI about its engine
+probe_docker() {
+    reset_probe
+    if ! out=$("$@" version --format '{{.Server.Os}}|{{.Server.Version}}' 2>/dev/null) || [ "${out#*|}" = "$out" ]; then
+        first_error "$@" version --format '{{.Server.Os}}|{{.Server.Version}}'
         return 1
     fi
     p_os=${out%%|*} p_version=${out#*|}
     info=$("$@" info --format '{{.OperatingSystem}}|{{.Isolation}}' 2>/dev/null || true)
     p_osname=${info%%|*} p_isolation=${info#*|}
+    security=$("$@" info --format '{{.SecurityOptions}}' 2>/dev/null || true)
+    case "$security" in *rootless*) p_rootless=true ;; *) p_rootless=false ;; esac
+    case "$security" in *selinux*) p_selinux=true ;; *) p_selinux=false ;; esac
     p_endpoint=$("$@" context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)
-    p_total=$("$@" ps -aq 2>/dev/null | wc -l | tr -d ' ')
-    p_mine=$("$@" ps -aq --filter "label=$ov_label" 2>/dev/null | wc -l | tr -d ' ')
+    count_containers "$@"
 }
 
-# Linux engine: the docker CLI's current context (DOCKER_HOST, Docker Desktop, colima, a distro's own Docker)
-l_available=false l_kind='' l_invoke=null l_version='' l_osname='' l_endpoint='' l_total='' l_mine='' l_reason='' l_tried=''
-if [ "$ov_engine" = none ]; then
-    l_reason='disabled by the linuxEngine override'
-elif ! command -v docker >/dev/null 2>&1; then
-    l_reason='docker CLI not installed'
-    l_tried="{\"kind\": \"docker\", \"distro\": null, \"error\": $(js "$l_reason")}"
-elif probe docker && [ "$p_os" = linux ]; then
-    l_available=true l_kind=docker l_invoke='["docker"]' l_version=$p_version l_osname=$p_osname
-    l_endpoint=$p_endpoint l_total=$p_total l_mine=$p_mine
-else
-    if [ -n "$p_os" ]; then p_error="it is a $p_os engine"; fi
-    l_reason='no candidate answered; see tried'
-    l_tried="{\"kind\": \"docker\", \"distro\": null, \"error\": $(js "$p_error")}"
+# probe_podman <podman command...>: asks a Podman CLI about its engine, with Podman's own field names
+probe_podman() {
+    reset_probe
+    format='{{.Host.OS}}|{{.Version.Version}}|{{.Host.Distribution.Distribution}} {{.Host.Distribution.Version}}|{{.Host.Security.Rootless}}|{{.Host.Security.SELinuxEnabled}}|{{.Host.RemoteSocket.Path}}'
+    if ! out=$("$@" info --format "$format" 2>/dev/null) || [ "${out#*|}" = "$out" ]; then
+        first_error "$@" info --format "$format"
+        return 1
+    fi
+    IFS='|' read -r p_os p_version p_osname p_rootless p_selinux p_endpoint <<EOF
+$out
+EOF
+    case "$p_rootless" in true | false) ;; *) p_rootless='' ;; esac
+    case "$p_selinux" in true | false) ;; *) p_selinux='' ;; esac
+    case "$p_endpoint" in /*) p_endpoint="unix://$p_endpoint" ;; esac
+    count_containers "$@"
+}
+
+# Linux engine: Docker first (the docker CLI's current context: DOCKER_HOST, Docker Desktop, colima, a distro's own
+# Docker), then Podman.
+l_available=false l_kind='' l_invoke=null l_version='' l_osname='' l_endpoint='' l_rootless='' l_selinux=''
+l_total='' l_mine='' l_reason='' l_tried='' l_denied=0
+# A Windows engine behind the docker CLI's current context (DOCKER_HOST or a remote context)
+remote_windows=0 rw_version='' rw_endpoint='' rw_isolation=''
+
+add_tried() {
+    entry="{\"kind\": \"$1\", \"distro\": null, \"error\": $(js "$2")}"
+    if [ -n "$l_tried" ]; then l_tried="$l_tried, $entry"; else l_tried=$entry; fi
+    case "$2" in *[Pp]ermission\ denied*) l_denied=1 ;; esac
+}
+found_linux() {
+    l_available=true l_kind=$1 l_invoke="[\"$2\"]" l_version=$p_version l_osname=$p_osname l_endpoint=$p_endpoint
+    l_rootless=$p_rootless l_selinux=$p_selinux l_total=$p_total l_mine=$p_mine
+}
+try_docker() {
+    if ! command -v docker >/dev/null 2>&1; then add_tried docker 'docker CLI not installed'; return 1; fi
+    if is_podman docker; then add_tried docker 'docker is the podman-docker shim'; return 1; fi
+    if ! probe_docker docker; then add_tried docker "$p_error"; return 1; fi
+    if [ "$p_os" = linux ]; then found_linux docker docker; return 0; fi
+    if [ "$p_os" = windows ]; then
+        remote_windows=1 rw_version=$p_version rw_endpoint=$p_endpoint rw_isolation=$p_isolation
+    fi
+    add_tried docker "it is a $p_os engine"
+    return 1
+}
+try_podman() {
+    cli=podman
+    if ! command -v podman >/dev/null 2>&1; then
+        if command -v docker >/dev/null 2>&1 && is_podman docker; then
+            cli=docker
+        else
+            add_tried podman 'podman CLI not installed'
+            return 1
+        fi
+    fi
+    if ! probe_podman "$cli"; then add_tried podman "$p_error"; return 1; fi
+    if [ "$p_os" = linux ]; then found_linux podman "$cli"; return 0; fi
+    add_tried podman "it is a $p_os engine"
+    return 1
+}
+case "$ov_engine" in
+    none) l_reason='disabled by the linuxEngine override' ;;
+    docker) try_docker || true ;;
+    podman) try_podman || true ;;
+    auto) try_docker || try_podman || true ;;
+esac
+if [ "$l_available" = false ] && [ -z "$l_reason" ]; then
+    if [ "$l_denied" = 1 ]; then
+        l_reason='socket permission denied'
+    elif ! command -v docker >/dev/null 2>&1 && ! command -v podman >/dev/null 2>&1; then
+        l_reason='no docker or podman CLI is installed'
+    else
+        l_reason='no candidate answered; see tried'
+    fi
 fi
 
-# Windows engine: only reachable from WSL, through Windows' docker.exe
+# Windows engine: from WSL, through Windows' docker.exe. From anywhere, a remote one behind the docker CLI's
+# current context. Podman can't run Windows containers.
 w_available=false w_invoke=null w_endpoint='' w_version='' w_isolation='' w_runners='' w_reason=''
-if [ "$platform" != wsl ]; then
-    w_reason="a $platform host has no Windows engine"
-elif ! command -v docker.exe >/dev/null 2>&1; then
-    w_reason='docker.exe is not on the PATH (WSL interop off, or no Windows Docker)'
-elif probe docker.exe && [ "$p_os" = windows ]; then
+if [ "$platform" = wsl ] && command -v docker.exe >/dev/null 2>&1 && probe_docker docker.exe && [ "$p_os" = windows ]; then
     w_available=true w_invoke='["docker.exe"]' w_endpoint=$p_endpoint w_version=$p_version w_isolation=$p_isolation
     if [ -n "$ov_runners" ]; then
         w_runners=0
@@ -133,6 +206,13 @@ elif probe docker.exe && [ "$p_os" = windows ]; then
         done
     fi
     w_reason='per-LTSC isolation is only worked out on Windows: run Get-HostCapabilities.ps1 with pwsh.exe'
+elif [ "$remote_windows" = 1 ]; then
+    w_available=true w_invoke='["docker"]' w_endpoint=$rw_endpoint w_version=$rw_version w_isolation=$rw_isolation
+    w_reason='a remote engine behind the docker context: per-LTSC isolation is not worked out, and bind mounts of this host do not work'
+elif [ "$platform" != wsl ]; then
+    w_reason="a $platform host has no Windows engine, and the docker context does not reach one"
+elif ! command -v docker.exe >/dev/null 2>&1; then
+    w_reason='docker.exe is not on the PATH (WSL interop off, or no Windows Docker)'
 else
     if [ -n "$p_os" ]; then p_error="docker.exe reaches a $p_os engine"; fi
     w_reason="docker.exe: $p_error"
@@ -192,6 +272,8 @@ cat >"$cache" <<EOF
     "endpoint": $(js "$l_endpoint"),
     "serverVersion": $(js "$l_version"),
     "operatingSystem": $(js "$l_osname"),
+    "rootless": $(jn "$l_rootless"),
+    "selinux": $(jn "$l_selinux"),
     "containers": $(jn "$l_total"),
     "claudeContainers": $(jn "$l_mine"),
     "repoPath": $(js "$root"),

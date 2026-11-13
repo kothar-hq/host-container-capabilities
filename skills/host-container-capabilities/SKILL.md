@@ -1,9 +1,9 @@
 ---
 name: host-container-capabilities
-description: Find out which container engines this host has (a Windows engine for Windows containers, a Linux engine such as a WSL distro's own Docker, both, or neither) and route container work to a local engine or to CI. Use before any docker command, before building or testing an image, before running Linux tools such as shellcheck or actionlint in a container, or when asked whether this machine can run Linux or Windows containers.
+description: Find out which container engines this host has (a Windows engine for Windows containers, a Linux engine such as Docker, Podman or a WSL distro's own Docker, both, or neither) and route container work to a local engine or to CI. Use before any docker or podman command, before building or testing an image, before running Linux tools such as shellcheck or actionlint in a container, or when asked whether this machine can run Linux or Windows containers.
 license: MIT
 metadata:
-  version: "0.9.1"
+  version: "0.10.0"
   repository: https://github.com/kothar-hq/host-container-capabilities
 ---
 
@@ -31,10 +31,12 @@ The fields that decide things:
 | `platform` | `windows`, `wsl` (the agent is running inside WSL), `linux` or `macos` |
 | `windowsEngine.available`, `.invoke` | Whether a Windows engine answers, and the command that reaches it (`docker`, or `docker.exe` from inside WSL) |
 | `windowsEngine.ltsc.<2019\|2022\|2025>.isolation` | `process`, `hyperv`, or `null` when that Windows version's images can't run here. Only filled in on Windows. |
-| `linuxEngine.available`, `.invoke` | Whether a Linux engine answers, and the command that reaches it, for example `["wsl.exe","--distribution","Ubuntu","--exec","docker"]` |
+| `linuxEngine.available`, `.invoke` | Whether a Linux engine answers, and the command that reaches it, for example `["wsl.exe","--distribution","Ubuntu","--exec","docker"]` or `["podman"]` |
+| `linuxEngine.kind` | `docker`, `wsl` (Docker inside a WSL distro), `docker-desktop-linux` or `podman`. It decides the flags in section 3. |
+| `linuxEngine.rootless`, `.selinux` | Whether the engine runs rootless, and whether SELinux is enforced on its host. They decide the user and mount flags in section 3. |
 | `linuxEngine.repoPath` | The project's path as the Linux engine's host sees it, for bind mounts |
 | `linuxEngine.containers` minus `.claudeContainers` | Containers that belong to someone else (the user's devcontainers, CI runners). Leave them alone. |
-| `linuxEngine.reason`, `.tried` | Why there's no Linux engine, and what was tried |
+| `linuxEngine.reason`, `.tried` | Why there's no Linux engine (for example `socket permission denied`), and what was tried |
 | `policy.sharedHost` | `true` unless the user overrode it. Shared means strict cleanup (section 4). |
 | `policy.createdByLabel`, `.sessionLabelKey` | The labels to put on everything you create (section 4) |
 | `github.authenticated` | Whether `gh` can dispatch workflows |
@@ -65,6 +67,17 @@ $linux = $report.linuxEngine
     --volume "$($linux.repoPath):/src:ro" --workdir /src rhysd/actionlint:1.7.12 -color
 ```
 
+- **Podman takes the same arguments** as docker for everything this skill does (`run`, `build`, `ps`, `images`, `rm`, `rmi`, `--label`, `--filter label=`). Give images their full name (`docker.io/rhysd/actionlint:1.7.12`): Podman may not search Docker Hub for a short name.
+- **Files written to a bind mount should belong to the user.** Which flag does that depends on the engine:
+
+  | `kind` | `rootless` | Flag |
+  | --- | --- | --- |
+  | `podman` | `true` | `--userns=keep-id` |
+  | `podman` | `false` | `--user "$(id -u):$(id -g)"` |
+  | any Docker kind | `false` | `--user "$(id -u):$(id -g)"` |
+  | any Docker kind | `true` | none: root in the container is already the user on the host. `--user` would map to a different host user. |
+
+- **SELinux:** when `linuxEngine.selinux` is `true`, add `:Z` to a bind mount (`--volume "$PWD:/src:Z"`, or `:ro,Z`), or the container can't read it. `:Z` relabels the directory, so only use it on the project, never on a home directory or a system path.
 - **Prefer PowerShell on Windows.** Git Bash rewrites arguments that look like paths (`/src` becomes `C:/Program Files/Git/src`), so in Bash prefix the command with `MSYS_NO_PATHCONV=1`.
 - **`--exec` runs docker without a shell** inside the distro. Don't pass `bash -lc '...'` through `wsl.exe`: the quoting breaks and `$variables` are expanded in the wrong place.
 - **`/mnt/c` is slow.** That's fine for linters and for reading the project. For a real build, copy the sources into the container or a Linux directory instead of building on the bind mount.
@@ -80,7 +93,7 @@ On a shared host (`policy.sharedHost`, the default), everything you create carri
 
 Prefer images that are already present (`docker images`). If you pull one, note that it wasn't there before, and remove exactly that reference when you're done.
 
-Clean up only what carries your session's label, on the engine you created it on:
+Clean up only what carries your session's label, on the engine you created it on. Put the engine's `invoke` in place of `docker`. The same commands work with Podman:
 
 ```sh
 docker ps -aq --filter label=<policy.sessionLabelKey>=<tag> | xargs -r docker rm -f
@@ -91,9 +104,12 @@ Never `docker system prune`, `docker image prune` or `docker builder prune` on a
 
 ## 5. When an engine is missing
 
+- **`linuxEngine.reason` is `socket permission denied`:** Docker is installed and running, but this user can't use its socket. Offer, after asking, to add the user to the `docker` group (`sudo usermod -aG docker "$USER"`, then a new login; this makes the user root-equivalent on the host, so say so), or to set up rootless Docker or Podman instead. Don't work around it with `sudo docker`.
+- **`linuxEngine.reason` is `no docker or podman CLI is installed`** (a cloud sandbox, a fresh machine): offer the CI workflow, or report what's missing.
 - **No Linux engine, but WSL is installed** (`linuxEngine.tried` names the distros): offer to install Docker Engine in the distro, or to start its daemon if `tried` says it isn't reachable. Both are host changes, so ask first. Otherwise, offer the CI workflow.
 - **No Linux engine and no WSL** (Windows without WSL, or a Linux or macOS host without Docker): offer the CI workflow, or report what's missing.
-- **No Windows engine** (Linux, macOS, or a cloud sandbox): Windows container images can only be built in CI, on a Windows runner. Don't try workarounds.
+- **No Windows engine** (Linux, macOS, or a cloud sandbox): Windows container images can only be built in CI, on a Windows runner. Don't try workarounds. Podman can't run Windows containers, so it never fills in `windowsEngine`.
+- **A remote Windows engine:** when the docker CLI's current context (or `DOCKER_HOST`) reaches a Windows engine from Linux or macOS, `windowsEngine.invoke` is `["docker"]`. Bind mounts of this host don't work there, and `ltsc` is `null`.
 
 ## 6. Never
 
@@ -117,7 +133,7 @@ Per host, in `.claude/host-container-capabilities.overrides.local.json` in the p
 }
 ```
 
-- `linuxEngine`: `auto` (the default), `none`, `wsl:<distro>` (Windows only), `docker` (the default docker context, if it's a Linux engine), or `docker-desktop-linux` (Windows only: Docker Desktop's Linux engine pipe, if it already exists; it's never switched to)
+- `linuxEngine`: `auto` (the default: Docker first, then Podman), `none`, `wsl:<distro>` (Windows only: Docker, then Podman, in that distro), `docker` (the default docker context, if it's a Linux engine), `podman` (the podman CLI; where `docker` is the podman-docker shim, the report says `podman`), or `docker-desktop-linux` (Windows only: Docker Desktop's Linux engine pipe, if it already exists; it's never switched to)
 - `sharedHost`: set `false` only on a host that nothing else uses
 - `maxAgeHours`: how long a report is reused
 - `createdByLabel`, `sessionLabelKey`: the labels from section 4, for a project that already has a labelling convention
