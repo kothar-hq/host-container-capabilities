@@ -95,13 +95,13 @@ jobs:
     env:
       CREATED_BY: io.github.kothar-hq.created-by=agent
       SESSION: io.github.kothar-hq.session=c1c1
-      PROJECT: ${{ runner.temp }}/project
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: The probe finds Podman
         run: |
+          PROJECT="${RUNNER_TEMP}/project"
           mkdir -p "${PROJECT}/.claude"
           echo '{"linuxEngine": "podman"}' >"${PROJECT}/.claude/host-container-capabilities.overrides.local.json"
           HOST_CONTAINER_CAPABILITIES_ROOT="${PROJECT}" sh skills/host-container-capabilities/scripts/host-capabilities.sh |
@@ -113,6 +113,7 @@ jobs:
             --volume "${PWD}:/src:ro" --workdir /src docker.io/rhysd/actionlint:1.7.12 -color
       - name: Files written to the project belong to the user
         run: |
+          PROJECT="${RUNNER_TEMP}/project"
           podman run --rm --name agent-write-c1c1 --label "${CREATED_BY}" --label "${SESSION}" --userns=keep-id \
             --volume "${PROJECT}:/work" docker.io/library/busybox:1.37 touch /work/written-by-container
           test "$(stat -c %u "${PROJECT}/written-by-container")" = "$(id -u)"
