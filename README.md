@@ -22,15 +22,15 @@ npx skills add kothar-hq/host-container-capabilities
 From npm, with the installer in the package:
 
 ```sh
-npx host-container-capabilities install            # into ./.claude/skills
-npx host-container-capabilities install --global   # into ~/.claude/skills
-npx host-container-capabilities install --dir .agents/skills
+npx @kothar-hq/host-container-capabilities install            # into ./.claude/skills
+npx @kothar-hq/host-container-capabilities install --global   # into ~/.claude/skills
+npx @kothar-hq/host-container-capabilities install --dir .agents/skills
 ```
 
 Or as a dev dependency, synced by the skills CLI:
 
 ```sh
-npm install --save-dev host-container-capabilities
+npm install --save-dev @kothar-hq/host-container-capabilities
 npx skills experimental_sync
 ```
 
@@ -68,6 +68,8 @@ npm run lint:md   # markdownlint
 ```
 
 CI also runs shellcheck, actionlint, PSScriptAnalyzer and CodeQL, and the tests on Linux, macOS and Windows. A change to `main` goes through a pull request.
+
+A release is a pull request that changes `version` in `package.json`, in `SKILL.md` and in `CHANGELOG.md` (a test checks that they agree). Merging it runs the `release` workflow, which publishes to npm with provenance, and creates the `vX.Y.Z` tag and the GitHub release.
 
 ## Licence
 

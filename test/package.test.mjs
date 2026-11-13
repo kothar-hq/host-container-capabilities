@@ -12,9 +12,9 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const skill = readFileSync(join(root, 'skills', name, 'SKILL.md'), 'utf8');
 const bin = join(root, 'bin', `${name}.mjs`);
 
-test('the skill is named after its directory and the package', () => {
+test('the skill is named after its directory, and the package after the skill, in the kothar-hq scope', () => {
     assert.match(skill, /^---\r?\nname: host-container-capabilities\r?\n/);
-    assert.equal(pkg.name, name);
+    assert.equal(pkg.name, `@kothar-hq/${name}`);
 });
 
 test('the skill, the package and the changelog agree on the version', () => {
