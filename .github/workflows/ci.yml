@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  MARKDOWNLINT_VERSION: 0.50.0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: markdownlint
+        run: npx -y "markdownlint-cli@${MARKDOWNLINT_VERSION}" --dot '**/*.md'
+      - name: shellcheck
+        run: shellcheck skills/*/scripts/*.sh
+      - name: actionlint
+        run: |
+          curl -fsSL -o actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check
+          mkdir -p "${RUNNER_TEMP}/actionlint"
+          tar -xzf actionlint.tar.gz -C "${RUNNER_TEMP}/actionlint" actionlint
+          rm actionlint.tar.gz
+          "${RUNNER_TEMP}/actionlint/actionlint" -color
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+              Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          }
+          $findings = Get-ChildItem -Recurse -Filter *.ps1 | Invoke-ScriptAnalyzer -Severity Warning, Error
+          $findings | Format-Table -AutoSize ScriptName, Line, RuleName, Message
+          if ($findings) { exit 1 }
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm test
+
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Pack, install the tarball, and run the installed skill
+        run: |
+          tarball="${PWD}/$(npm pack --silent)"
+          tar -tzf "${tarball}"
+          project=$(mktemp -d)
+          cd "${project}"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "${tarball}"
+          npx --no-install host-container-capabilities install
+          test -x .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
+          HOST_CONTAINER_CAPABILITIES_ROOT="${project}" sh .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
+
+  # The one required status check: it passes only when every job above passed.
+  ci:
+    if: always()
+    needs: [lint, test, pack]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the other jobs
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: ${RESULTS}"
+          for result in ${RESULTS}; do
+            if [ "${result}" != success ]; then exit 1; fi
+          done

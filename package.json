@@ -1,0 +1,41 @@
+{
+  "name": "host-container-capabilities",
+  "version": "0.9.0",
+  "description": "An agent skill that finds out which container engines a host has (Windows, Linux, WSL) and routes container work to a local engine or to CI.",
+  "keywords": [
+    "agent-skill",
+    "agent-skills",
+    "skills",
+    "claude-code",
+    "docker",
+    "wsl",
+    "windows-containers"
+  ],
+  "license": "MIT",
+  "author": "Justin Dearing",
+  "homepage": "https://github.com/kothar-hq/host-container-capabilities#readme",
+  "bugs": "https://github.com/kothar-hq/host-container-capabilities/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kothar-hq/host-container-capabilities.git"
+  },
+  "type": "module",
+  "bin": {
+    "host-container-capabilities": "bin/host-container-capabilities.mjs"
+  },
+  "files": [
+    "bin",
+    "skills"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "lint:md": "npx -y markdownlint-cli@0.50.0 --dot \"**/*.md\""
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+*.tgz
+# Per-host files: agent settings, and the probe's report and overrides
+.claude/*.local.json
