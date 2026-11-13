@@ -2,6 +2,10 @@
 
 Versions follow [semantic versioning](https://semver.org). The probe report has its own `schemaVersion`.
 
+## 0.9.1
+
+The first automated release by CI
+
 ## 0.9.0
 
 The first public release. The skill comes from [zippy1981/windows-nano-baseimages](https://github.com/zippy1981/windows-nano-baseimages), where it was called `host-capabilities`.
