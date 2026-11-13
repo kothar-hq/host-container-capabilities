@@ -69,6 +69,8 @@ npm run lint:md   # markdownlint
 
 CI also runs shellcheck, actionlint, PSScriptAnalyzer and CodeQL, and the tests on Linux, macOS and Windows. A change to `main` goes through a pull request.
 
+A release is a pull request that changes `version` in `package.json`, in `SKILL.md` and in `CHANGELOG.md` (a test checks that they agree). Merging it runs the `release` workflow, which publishes to npm with provenance, and creates the `vX.Y.Z` tag and the GitHub release.
+
 ## Licence
 
 [MIT](LICENSE)
