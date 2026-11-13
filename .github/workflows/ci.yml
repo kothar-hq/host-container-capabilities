@@ -40,6 +40,8 @@ jobs:
           tar -xzf actionlint.tar.gz -C "${RUNNER_TEMP}/actionlint" actionlint
           rm actionlint.tar.gz
           "${RUNNER_TEMP}/actionlint/actionlint" -color
+      - name: check that action steps use major-version tags, not SHAs
+        run: bash scripts/check-action-versions.sh
       - name: PSScriptAnalyzer
         shell: pwsh
         run: |
