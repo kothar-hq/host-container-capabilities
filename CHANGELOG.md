@@ -2,7 +2,7 @@
 
 Versions follow [semantic versioning](https://semver.org). The probe report has its own `schemaVersion`.
 
-## Unreleased
+## 0.10.0
 
 - Podman as a Linux engine (kind `podman`, and a `"linuxEngine": "podman"` override): tried after Docker, read with Podman's own `info` fields, and reported as `podman` where `docker` is the podman-docker shim.
 - `linuxEngine.rootless` and `linuxEngine.selinux`, and the user and mount flags they call for.

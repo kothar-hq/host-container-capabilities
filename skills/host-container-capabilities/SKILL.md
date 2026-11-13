@@ -3,7 +3,7 @@ name: host-container-capabilities
 description: Find out which container engines this host has (a Windows engine for Windows containers, a Linux engine such as Docker, Podman or a WSL distro's own Docker, both, or neither) and route container work to a local engine or to CI. Use before any docker or podman command, before building or testing an image, before running Linux tools such as shellcheck or actionlint in a container, or when asked whether this machine can run Linux or Windows containers.
 license: MIT
 metadata:
-  version: "0.9.1"
+  version: "0.10.0"
   repository: https://github.com/kothar-hq/host-container-capabilities
 ---
 
