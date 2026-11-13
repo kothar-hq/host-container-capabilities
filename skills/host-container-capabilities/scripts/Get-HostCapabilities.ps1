@@ -172,7 +172,7 @@ function Get-EngineFact {
 # own field names. Returns $null and sets $script:probeError when the engine doesn't answer.
 function Get-PodmanFact {
     param([Parameter(Mandatory)][string[]]$Podman)
-    $format = '{{.Host.Os}}|{{.Version.Version}}|{{.Host.Distribution.Distribution}} {{.Host.Distribution.Version}}|' +
+    $format = '{{.Host.OS}}|{{.Version.Version}}|{{.Host.Distribution.Distribution}} {{.Host.Distribution.Version}}|' +
         '{{.Host.Security.Rootless}}|{{.Host.Security.SELinuxEnabled}}|{{.Host.RemoteSocket.Path}}'
     $info = Invoke-Native ($Podman + @('info', '--format', $format))
     $line = $info.Output -split "`n" | Where-Object { $_ -match '^\w+\|' } | Select-Object -First 1

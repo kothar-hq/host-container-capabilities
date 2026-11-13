@@ -121,7 +121,7 @@ probe_docker() {
 # probe_podman <podman command...>: asks a Podman CLI about its engine, with Podman's own field names
 probe_podman() {
     reset_probe
-    format='{{.Host.Os}}|{{.Version.Version}}|{{.Host.Distribution.Distribution}} {{.Host.Distribution.Version}}|{{.Host.Security.Rootless}}|{{.Host.Security.SELinuxEnabled}}|{{.Host.RemoteSocket.Path}}'
+    format='{{.Host.OS}}|{{.Version.Version}}|{{.Host.Distribution.Distribution}} {{.Host.Distribution.Version}}|{{.Host.Security.Rootless}}|{{.Host.Security.SELinuxEnabled}}|{{.Host.RemoteSocket.Path}}'
     if ! out=$("$@" info --format "$format" 2>/dev/null) || [ "${out#*|}" = "$out" ]; then
         first_error "$@" info --format "$format"
         return 1
