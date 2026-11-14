@@ -59,13 +59,29 @@ Dispatching a workflow is outward-facing, so ask before `gh workflow run`. If `g
 
 Use `invoke` exactly as the report gives it, with the docker arguments after it.
 
+On Windows, PowerShell builds the flags from the report, so the same block works on a Docker host and a Podman host:
+
 ```pwsh
 $report = <skill>/scripts/Get-HostCapabilities.ps1
 $linux = $report.linuxEngine
+$mount = "$($linux.repoPath):/src:ro"
+$flags = @()
+if ($linux.selinux) { $mount += ',Z' }
+if ($linux.kind -eq 'podman' -and $linux.rootless) { $flags += '--userns=keep-id' }
 & $linux.invoke[0] @($linux.invoke | Select-Object -Skip 1) run --rm --name agent-lint-3f9a `
     --label $report.policy.createdByLabel --label "$($report.policy.sessionLabelKey)=3f9a" `
-    --volume "$($linux.repoPath):/src:ro" --workdir /src rhysd/actionlint:1.7.12 -color
+    @flags --volume $mount --workdir /src docker.io/rhysd/actionlint:1.7.12 -color
 ```
+
+On Linux and macOS, with a Podman engine that is rootless and SELinux-enforcing (Fedora's default), this is the command that was run and checked:
+
+```sh
+podman run --rm --name agent-lint-3f9a \
+    --label io.github.kothar-hq.created-by=agent --label io.github.kothar-hq.session=3f9a \
+    --userns=keep-id --volume "$PWD:/src:ro,Z" --workdir /src docker.io/rhysd/actionlint:1.7.12 -color
+```
+
+Without `--userns=keep-id`, a rootless Podman can't read the project under `:ro,Z`. The `:Z` is needed on SELinux hosts. With a plain `--volume "$PWD:/src:ro"` on Fedora, actionlint fails with `permission denied` reading `.github/workflows`.
 
 - **Podman takes the same arguments** as docker for everything this skill does (`run`, `build`, `ps`, `images`, `rm`, `rmi`, `--label`, `--filter label=`). Give images their full name (`docker.io/rhysd/actionlint:1.7.12`): Podman may not search Docker Hub for a short name.
 - **Files written to a bind mount should belong to the user.** Which flag does that depends on the engine:

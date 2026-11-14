@@ -2,6 +2,10 @@
 
 Versions follow [semantic versioning](https://semver.org). The probe report has its own `schemaVersion`.
 
+## Unreleased
+
+- The skill's actionlint example adds `--userns=keep-id` for a rootless Podman and `:ro,Z` on SELinux hosts. The old example failed with `permission denied` on Fedora. Verified on Fedora 44 with rootless Podman and SELinux enforcing, from a Fedora container that has Podman but no podman-docker shim.
+
 ## 0.10.0
 
 - Podman as a Linux engine (kind `podman`, and a `"linuxEngine": "podman"` override): tried after Docker, read with Podman's own `info` fields, and reported as `podman` where `docker` is the podman-docker shim.
