@@ -87,6 +87,26 @@ jobs:
           npx --no-install host-container-capabilities install
           test -x .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
           HOST_CONTAINER_CAPABILITIES_ROOT="${project}" sh .claude/skills/host-container-capabilities/scripts/host-capabilities.sh
+      # The npx skills CLI finds the skill in the packed package, from the tarball's install, and from the repo.
+      - name: The skills CLI finds the skill
+        run: |
+          tarball="${PWD}/$(npm pack --silent)"
+          project=$(mktemp -d)
+          cd "${project}"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "${tarball}"
+          npx --yes skills@1.8.1 experimental_sync -y
+          test -f .agents/skills/host-container-capabilities/SKILL.md
+          npx --yes skills@1.8.1 add node_modules/@kothar-hq/host-container-capabilities --list |
+            tee "${RUNNER_TEMP}/packed.txt"
+          grep -q 'host-container-capabilities' "${RUNNER_TEMP}/packed.txt"
+          cd "${GITHUB_WORKSPACE}"
+          npx --yes skills@1.8.1 add . --list | tee "${RUNNER_TEMP}/repo.txt"
+          grep -q 'host-container-capabilities' "${RUNNER_TEMP}/repo.txt"
+          if grep -q 'bump-version' "${RUNNER_TEMP}/repo.txt"; then
+            echo "bump-version is internal and should not be listed" >&2
+            exit 1
+          fi
 
   # The skill's own examples under rootless Podman, which ubuntu-latest ships.
   podman:
