@@ -95,7 +95,8 @@ jobs:
           cd "${project}"
           npm init -y >/dev/null
           npm install --no-audit --no-fund "${tarball}"
-          npx --yes skills@1.8.1 experimental_sync -y
+          # The throwaway project has no skills-lock.json yet, so CI (which freezes the lockfile by default) must allow it.
+          npx --yes skills@1.8.1 experimental_sync -y --no-frozen-lockfile
           test -f .agents/skills/host-container-capabilities/SKILL.md
           npx --yes skills@1.8.1 add node_modules/@kothar-hq/host-container-capabilities --list |
             tee "${RUNNER_TEMP}/packed.txt"
