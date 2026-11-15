@@ -1,6 +1,8 @@
 ---
 name: bump-version
 description: Bump the package version in all three canonical places (package.json, SKILL.md, CHANGELOG.md) and create a release branch. Load before starting any release or version-increment work.
+metadata:
+  internal: true
 ---
 
 # bump-version

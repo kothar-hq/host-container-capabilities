@@ -19,6 +19,8 @@ With the [skills CLI](https://skills.sh), from GitHub:
 npx skills add kothar-hq/host-container-capabilities
 ```
 
+The skills CLI takes a GitHub repository, a git URL or a local path, not an npm package name, so `npx skills add @kothar-hq/host-container-capabilities` won't work. To get the skill from npm, use the dev dependency below.
+
 From npm, with the installer in the package:
 
 ```sh

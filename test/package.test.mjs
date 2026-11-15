@@ -17,6 +17,15 @@ test('the skill is named after its directory, and the package after the skill, i
     assert.equal(pkg.name, `@kothar-hq/${name}`);
 });
 
+test('the skill has the frontmatter the skills CLI requires: a name and a description', () => {
+    assert.match(skill, /^description: \S/m);
+});
+
+test('the repo-only skills are hidden from the skills CLI', () => {
+    const dev = readFileSync(join(root, '.claude', 'skills', 'bump-version', 'SKILL.md'), 'utf8');
+    assert.match(dev, /^metadata:\r?\n {2}internal: true\r?$/m);
+});
+
 test('the skill, the package and the changelog agree on the version', () => {
     const skillVersion = skill.match(/^ {2}version: "([^"]+)"$/m)?.[1];
     assert.equal(skillVersion, pkg.version);
